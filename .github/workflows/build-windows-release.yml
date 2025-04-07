@@ -16,7 +16,7 @@ jobs:
       uses: actions/checkout@v4
 
     - name: Setup Qt
-      uses: jurplel/setup-qt-action@v2
+      uses: jurplel/install-qt-action@v2
       with:
         version: 6.7.0
         host: windows
