@@ -1,46 +1,55 @@
-name: Build Project
+name: Build and Release
 
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag (format v1.0.0)'
+        required: true
 
 jobs:
-  build:
+  multi_platform_build:
     name: Build (${{ matrix.os }}-${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           # Windows builds
           - os: windows-latest
             arch: x86_64
-            qt_ver: '5.15.2'
-            msvc: win64_msvc2019_64
+            qmake_spec: win32-clang-msvc
+            artifact_name: windows-x64
+          
           - os: windows-latest
             arch: arm64
-            qt_ver: '5.15.2'
-            msvc: win64_msvc2019_arm64
+            qmake_spec: win32-clang-msvc
+            artifact_name: windows-arm64
 
           # macOS builds
           - os: macos-latest
             arch: x86_64
-            qt_ver: '5.15.2'
-            macos: clang_64
+            qmake_spec: macx-clang
+            artifact_name: macos-x64
+          
           - os: macos-latest
             arch: arm64
-            qt_ver: '5.15.2'
-            macos: darwin_arm64
+            qmake_spec: macx-clang-arm64
+            artifact_name: macos-arm64
 
           # Linux builds
           - os: ubuntu-latest
             arch: x86_64
-            qt_ver: '5.15.2'
-            linux: gcc_64
+            qmake_spec: linux-g++
+            artifact_name: linux-x64
+          
           - os: ubuntu-latest
             arch: arm64
-            qt_ver: '5.15.2'
-            linux: gcc_arm64
+            qmake_spec: linux-aarch64-g++
+            artifact_name: linux-arm64
 
     steps:
     - name: Checkout code
@@ -49,54 +58,74 @@ jobs:
     - name: Setup Qt
       uses: jurplel/install-qt-action@v3
       with:
-        version: ${{ matrix.qt_ver }}
-        host: windows # Will be ignored except on Windows
-        target: ${{ matrix.msvc || matrix.macos || matrix.linux }}
-        dir: ${{ github.workspace }}/Qt
+        version: '5.15.2'
+        host: ${{ contains(matrix.os, 'windows') && 'windows' || 'linux' }}
+        target: ${{ matrix.arch }}
 
-    - name: Install dependencies (Linux)
+    - name: Install dependencies
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential libgl1-mesa-dev
 
-    - name: Build Core Library
+    - name: Build Projects
       shell: cmd
       run: |
-        set PATH=%PATH%;%CD%\Qt\bin
-        qmake YunYooDbgCore.pro -spec %QMAKE_SPEC%
-        nmake || jom
+        qmake YunYooDbgCore.pro -spec ${{ matrix.qmake_spec }}
+        nmake
+        cd gui && qmake x64dbglib.pro -spec ${{ matrix.qmake_spec }} && nmake
+        cd ../A64Dbg && qmake A64Dbg.pro -spec ${{ matrix.qmake_spec }} && nmake
+        cd ../VMPStudio && qmake VMPStudio.pro -spec ${{ matrix.qmake_spec }} && nmake
 
-    - name: Build GUI Library
-      shell: cmd
-      run: |
-        set PATH=%PATH%;%CD%\Qt\bin
-        qmake gui/x64dbglib.pro -spec %QMAKE_SPEC% ${{ matrix.os == 'Windows' && 'QMAKE_SPEC=win32-clang-msvc' }}
-        nmake || jom
-
-    - name: Build A64Dbg
-      shell: cmd
-      run: |
-        set PATH=%PATH%;%CD%\Qt\bin
-        qmake A64Dbg.pro -spec %QMAKE_SPEC% ${{ matrix.os == 'Windows' && 'QMAKE_SPEC=win32-clang-msvc' }}
-        nmake || jom
-
-    - name: Build VMPStudio
-      shell: cmd
-      run: |
-        set PATH=%PATH%;%CD%\Qt\bin
-        qmake VMPStudio.pro -spec %QMAKE_SPEC% ${{ matrix.os == 'Windows' && 'QMAKE_SPEC=win32-clang-msvc' }}
-        nmake || jom
-
-    - name: Collect artifacts
+    - name: Package Artifacts
+      shell: bash
       run: |
         mkdir release
-        cp -r {A64Dbg,VMPStudio}/*.exe release/ 2>/dev/null || true
-        cp -r {A64Dbg,VMPStudio}/*.app release/ 2>/dev/null || true
+        # Windows packaging
+        if [ "${{ runner.os }}" == "Windows" ]; then
+          cp A64Dbg/release/A64Dbg.exe release/
+          cp VMPStudio/release/VMPStudio.exe release/
+        # macOS packaging
+        elif [ "${{ runner.os }}" == "macOS" ]; then
+          cp -R A64Dbg/A64Dbg.app release/
+          cp -R VMPStudio/VMPStudio.app release/
+        # Linux packaging
+        else
+          cp A64Dbg/A64Dbg release/
+          cp VMPStudio/VMPStudio release/
+        fi
         cp LICENSE README.X64DBG.md release/
 
-    - name: Upload artifacts
+    - name: Upload Artifact
       uses: actions/upload-artifact@v3
       with:
-        name: Binaries-${{ matrix.os }}-${{ matrix.arch }}
+        name: ${{ matrix.artifact_name }}-binaries
         path: release/
+
+  create_release:
+    needs: multi_platform_build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: artifacts
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref || inputs.release_tag }}
+          release_name: Release ${{ github.ref || inputs.release_tag }}
+          draft: false
+          prerelease: false
+
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            artifacts/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
