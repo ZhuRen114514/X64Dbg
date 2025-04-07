@@ -54,7 +54,7 @@ jobs:
           7z a release.zip .\bin\*.exe .\lib\*.dll
 
       - name: 上传 Release 产物
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: windows-release
           path: release.zip
