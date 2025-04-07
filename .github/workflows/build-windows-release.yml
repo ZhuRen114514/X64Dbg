@@ -1,0 +1,60 @@
+name: Build Windows Release
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v3
+
+      - name: 安装 Qt 和 MSVC 工具链
+        uses: jurplel/install-qt-action@v3
+        with:
+          version: 6.5.0
+          arch: win64_msvc2019_64
+          modules: qtbase qttools
+
+      - name: 配置环境变量
+        shell: cmd
+        run: |
+          echo "QMAKE_SPEC=win32-clang-msvc" >> %GITHUB_ENV
+          echo "QT_PATH=%Qt6_DIR%\..\.." >> %GITHUB_ENV
+
+      - name: 构建 YunYooDbgCore
+        shell: cmd
+        working-directory: ${{ github.workspace }}
+        run: |
+          qmake YunYooDbgCore.pro -spec %QMAKE_SPEC%
+          nmake release
+
+      - name: 构建 x64dbglib
+        shell: cmd
+        working-directory: ${{ github.workspace }}/gui
+        run: |
+          qmake x64dbglib.pro -spec %QMAKE_SPEC%
+          nmake release
+
+      - name: 构建 A64Dbg 和 VMPStudio
+        shell: cmd
+        working-directory: ${{ github.workspace }}
+        run: |
+          qmake A64Dbg.pro -spec %QMAKE_SPEC%
+          nmake release
+          qmake VMPStudio.pro -spec %QMAKE_SPEC%
+          nmake release
+
+      - name: 打包 Release 文件
+        shell: cmd
+        run: |
+          7z a release.zip .\bin\*.exe .\lib\*.dll
+
+      - name: 上传 Release 产物
+        uses: actions/upload-artifact@v3
+        with:
+          name: windows-release
+          path: release.zip
