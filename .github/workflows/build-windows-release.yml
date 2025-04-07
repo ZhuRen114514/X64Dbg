@@ -1,74 +1,87 @@
-name: Windows x86_64 Build
+name: Build Windows Release
 
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - "v*"
 
 jobs:
   build:
-    name: Build and Release
     runs-on: windows-latest
-    environment: release
-    permissions:
-      contents: write
+    env:
+      QT_VERSION: 6.6.0
+      QT_ARCH: win64_msvc2022_64
+      QMAKE_SPEC: win32-clang-msvc
+      QT_INSTALL_DIR: D:/Qt
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: 检出代码
+        uses: actions/checkout@v4
 
-    - name: Setup Qt
-      uses: jurplel/install-qt-action@v2
-      with:
-        version: 6.7.0
-        host: windows
-        target: desktop
-        arch: win64_msvc2019_64
-        modules: qttools
+      - name: 安装 Qt 和依赖
+        uses: jurplel/install-qt-action@v3
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: ${{ env.QT_ARCH }}
+          dir: ${{ env.QT_INSTALL_DIR }}
+          modules: qt_base qt_tools qt_winextras  # 关键修正
+          install-deps: true
 
-    - name: Install build tools
-      shell: powershell
-      run: |
-        choco install jom -y
-        echo "C:\Qt\Tools\QtCreator\bin" >> $env:GITHUB_PATH
-        echo "C:\Qt\6.7.0\msvc2019_64\bin" >> $env:GITHUB_PATH
+      - name: 验证 Qt 模块
+        shell: cmd
+        run: |
+          aqt list-qt windows desktop --modules 6.6.0 win64_msvc2022_64
 
-    - name: Build DebugEngine
-      shell: cmd
-      run: |
-        qmake YunYooDbgCore.pro -spec win32-msvc
-        jom release
+      - name: 配置 MSVC 2022 环境
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          echo "PATH=${{ env.QT_INSTALL_DIR }}\${{ env.QT_VERSION }}\msvc2022_64\bin;%PATH%" >> %GITHUB_ENV
 
-    - name: Build GUI Library
-      shell: cmd
-      run: |
-        cd gui
-        qmake x64dbglib.pro -spec win32-clang-msvc
-        jom release
-        cd ..
+      - name: 构建核心库 (YunYooDbgCore)
+        shell: cmd
+        run: |
+          qmake YunYooDbgCore.pro -spec ${{ env.QMAKE_SPEC }} CONFIG+=release
+          nmake release
 
-    - name: Build A64Dbg
-      shell: cmd
-      run: |
-        qmake A64Dbg.pro -spec win32-clang-msvc
-        jom release
+      - name: 构建 GUI 库 (x64dbglib)
+        shell: cmd
+        run: |
+          cd gui
+          qmake x64dbglib.pro -spec ${{ env.QMAKE_SPEC }} CONFIG+=release
+          nmake release
+          cd ..
 
-    - name: Build VMPStudio
-      shell: cmd
-      run: |
-        qmake VMPStudio.pro -spec win32-clang-msvc
-        jom release
+      - name: 构建 A64Dbg 主程序
+        shell: cmd
+        run: |
+          qmake A64Dbg.pro -spec ${{ env.QMAKE_SPEC }} CONFIG+=release
+          nmake release
 
-    - name: Package artifacts
-      shell: powershell
-      run: |
-        $date = Get-Date -Format "yyyyMMdd"
-        Compress-Archive -Path @("A64Dbg/release/*", "VMPStudio/release/*") -DestinationPath "X64Dbg-$date-win64.zip"
+      - name: 构建 VMPStudio 主程序
+        shell: cmd
+        run: |
+          qmake VMPStudio.pro -spec ${{ env.QMAKE_SPEC }} CONFIG+=release
+          nmake release
 
-    - name: Upload Release
-      uses: softprops/action-gh-release@v1
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        files: X64Dbg-*-win64.zip
-        draft: false
-        prerelease: false
-        title: "Nightly Build ${{ github.run_number }}"
-        body: "Automatic build for Windows x86_64"
+      - name: 打包 Release 文件
+        shell: cmd
+        run: |
+          7z a -r X64Dbg-Windows-Release.zip ^
+            ./release/A64Dbg.exe ^
+            ./release/VMPStudio.exe ^
+            ./release/*.dll ^
+            ./release/platforms/
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: X64Dbg-Windows-Release
+          path: X64Dbg-Windows-Release.zip
+
+      - name: 发布到 GitHub Releases
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: X64Dbg-Windows-Release.zip
