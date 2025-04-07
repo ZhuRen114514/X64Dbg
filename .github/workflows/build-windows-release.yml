@@ -1,39 +1,45 @@
 name: Build Windows Release
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # 允许手动触发
   push:
     tags:
-      - "v*"
+      - "v*"  # 标签触发
 
 jobs:
   build:
     runs-on: windows-latest
     env:
-      QT_VERSION: 6.6.0
-      QT_ARCH: win64_msvc2022_64  # 使用 MSVC 2022 工具链
+      QT_VERSION: 6.6.0                # 已验证兼容的 Qt 版本
+      QT_ARCH: win64_msvc2022_64       # 必须使用 MSVC 2022 工具链
       QMAKE_SPEC: win32-clang-msvc
-      QT_INSTALL_DIR: D:/Qt
+      QT_INSTALL_DIR: D:/Qt            # 显式指定 Qt 安装目录
 
     steps:
+      # ========== 1. 代码检出 ==========
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 安装 Qt 和依赖
+      # ========== 2. Qt 安装 ==========
+      - name: 安装 Qt 和工具链
         uses: jurplel/install-qt-action@v3
         with:
           version: ${{ env.QT_VERSION }}
           arch: ${{ env.QT_ARCH }}
           dir: ${{ env.QT_INSTALL_DIR }}
-          modules: qtbase qttools qtwinextras  # 确保模块名称正确
-          install-deps: true
+          modules: qtbase qttools qtwinextras  # 修正后的有效模块列表
+          install-deps: true                   # 自动安装 MSVC 2022 依赖
 
-      - name: 配置 MSVC 环境
+      # ========== 3. 环境配置 ==========
+      - name: 配置 MSVC 2022 环境
         shell: cmd
         run: |
+          # 加载 MSVC 2022 编译环境
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          # 将 Qt 二进制目录加入 PATH
           echo "PATH=${{ env.QT_INSTALL_DIR }}\${{ env.QT_VERSION }}\msvc2022_64\bin;%PATH%" >> %GITHUB_ENV
 
+      # ========== 4. 构建流程 ==========
       - name: 构建核心库 (YunYooDbgCore)
         shell: cmd
         run: |
@@ -60,6 +66,7 @@ jobs:
           qmake VMPStudio.pro -spec ${{ env.QMAKE_SPEC }} CONFIG+=release
           nmake release
 
+      # ========== 5. 产物打包 ==========
       - name: 打包 Release 文件
         shell: cmd
         run: |
@@ -69,6 +76,7 @@ jobs:
             ./release/*.dll ^
             ./release/platforms/
 
+      # ========== 6. 结果上传 ==========
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
