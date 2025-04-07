@@ -7,29 +7,31 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest  # 使用 Windows 最新环境
+    runs-on: windows-latest  # Windows 最新环境
     env:
-      QT_VERSION: 6.6.0       # 使用已验证兼容的 Qt 版本
+      QT_VERSION: 6.6.0       # 已验证兼容的 Qt 版本
       QT_ARCH: win64_msvc2019_64
       QMAKE_SPEC: win32-clang-msvc
+      QT_INSTALL_DIR: D:/Qt   # 显式指定 Qt 安装目录
 
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 安装 Qt 和工具链
+      - name: 安装 Qt 和依赖
         uses: jurplel/install-qt-action@v3
         with:
           version: ${{ env.QT_VERSION }}
           arch: ${{ env.QT_ARCH }}
-          modules: qtbase qttools qtwinextras  # 核心模块 + 必要依赖
-          install-deps: true  # 自动安装 Windows 构建依赖
+          dir: ${{ env.QT_INSTALL_DIR }}  # 强制安装路径
+          modules: qtbase qttools qtwinextras  # 必需模块
+          install-deps: true  # 自动安装 MSVC 工具链
 
       - name: 配置 MSVC 环境
         shell: cmd
         run: |
           call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
-          echo "PATH=%PATH%;C:\Qt\${{ env.QT_VERSION }}\msvc2019_64\bin" >> %GITHUB_ENV
+          echo "PATH=${{ env.QT_INSTALL_DIR }}\${{ env.QT_VERSION }}\msvc2019_64\bin;%PATH%" >> %GITHUB_ENV
 
       - name: 构建核心库 (YunYooDbgCore)
         shell: cmd
