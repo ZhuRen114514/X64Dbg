@@ -1,126 +1,102 @@
-name: Build Windows Release
+name: Build Project
 
 on:
-  workflow_dispatch:   # 允许手动触发
   push:
     tags:
-      - "v*"           # 标签触发规则
+      - 'v*'
 
 jobs:
   build:
-    runs-on: windows-latest  # 必须使用 Windows 环境
-    env:
-      QT_VERSION: 6.5.3                # 建议改用 LTS 版本
-      QT_ARCH: win64_msvc2019_64       # 匹配 Qt 6.5.x 的架构名称
-      QT_INSTALL_DIR: C:/Qt           # 必须使用 C 盘路径
-      QMAKE_SPEC: win32-msvc          # 官方推荐的 spec 名称
-      BUILD_DIR: ./build-release      # 统一构建目录
+    name: Build (${{ matrix.os }}-${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          # Windows builds
+          - os: windows-latest
+            arch: x86_64
+            qt_ver: '5.15.2'
+            msvc: win64_msvc2019_64
+          - os: windows-latest
+            arch: arm64
+            qt_ver: '5.15.2'
+            msvc: win64_msvc2019_arm64
+
+          # macOS builds
+          - os: macos-latest
+            arch: x86_64
+            qt_ver: '5.15.2'
+            macos: clang_64
+          - os: macos-latest
+            arch: arm64
+            qt_ver: '5.15.2'
+            macos: darwin_arm64
+
+          # Linux builds
+          - os: ubuntu-latest
+            arch: x86_64
+            qt_ver: '5.15.2'
+            linux: gcc_64
+          - os: ubuntu-latest
+            arch: arm64
+            qt_ver: '5.15.2'
+            linux: gcc_arm64
 
     steps:
-      # ========== [1] 代码检出 ==========
-      - name: Checkout source code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0             # 获取完整提交历史
-          submodules: recursive      # 包含子模块
+    - name: Checkout code
+      uses: actions/checkout@v4
 
-      # ========== [2] 安装 Qt 套件 ==========
-      - name: Install Qt with aqt
-        shell: cmd
-        run: |
-          # 安装必要 Python 依赖
-          python -m pip install --upgrade pip
-          pip install aqtinstall==3.1.21
+    - name: Setup Qt
+      uses: jurplel/install-qt-action@v3
+      with:
+        version: ${{ matrix.qt_ver }}
+        host: windows # Will be ignored except on Windows
+        target: ${{ matrix.msvc || matrix.macos || matrix.linux }}
+        dir: ${{ github.workspace }}/Qt
 
-          # 安装 Qt 主程序
-          aqt install-qt -O "${{ env.QT_INSTALL_DIR }}" windows desktop ${{ env.QT_VERSION }} ${{ env.QT_ARCH }} \
-            --modules qtbase qttools qtwinextras qtsvg qt5compat
+    - name: Install dependencies (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libgl1-mesa-dev
 
-          # 验证安装结果
-          if not exist "${{ env.QT_INSTALL_DIR }}\${{ env.QT_VERSION }}\${{ env.QT_ARCH }}\bin\qmake.exe" (
-            echo ::error::Qt installation verification failed!
-            exit 1
-          )
+    - name: Build Core Library
+      shell: cmd
+      run: |
+        set PATH=%PATH%;%CD%\Qt\bin
+        qmake YunYooDbgCore.pro -spec %QMAKE_SPEC%
+        nmake || jom
 
-      # ========== [3] 配置编译环境 ==========
-      - name: Setup MSVC Environment
-        shell: cmd
-        run: |
-          # 加载 MSVC 2019 编译环境
-          call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
-          
-          # 配置 Qt 环境变量
-          echo "QTDIR=${{ env.QT_INSTALL_DIR }}\${{ env.QT_VERSION }}\${{ env.QT_ARCH }}" >> %GITHUB_ENV
-          echo "PATH=%QTDIR%\bin;%PATH%" >> %GITHUB_ENV
+    - name: Build GUI Library
+      shell: cmd
+      run: |
+        set PATH=%PATH%;%CD%\Qt\bin
+        qmake gui/x64dbglib.pro -spec %QMAKE_SPEC% ${{ matrix.os == 'Windows' && 'QMAKE_SPEC=win32-clang-msvc' }}
+        nmake || jom
 
-      # ========== [4] 创建构建目录 ==========
-      - name: Create build directory
-        shell: cmd
-        run: |
-          if exist "${{ env.BUILD_DIR }}" rmdir /s /q "${{ env.BUILD_DIR }}"
-          mkdir "${{ env.BUILD_DIR }}"
-          cd "${{ env.BUILD_DIR }}"
+    - name: Build A64Dbg
+      shell: cmd
+      run: |
+        set PATH=%PATH%;%CD%\Qt\bin
+        qmake A64Dbg.pro -spec %QMAKE_SPEC% ${{ matrix.os == 'Windows' && 'QMAKE_SPEC=win32-clang-msvc' }}
+        nmake || jom
 
-      # ========== [5] 构建核心库 ==========
-      - name: Build YunYooDbgCore
-        shell: cmd
-        working-directory: ${{ env.BUILD_DIR }}
-        run: |
-          qmake "${{ github.workspace }}/YunYooDbgCore.pro" -spec ${{ env.QMAKE_SPEC }} CONFIG+=release
-          nmake clean
-          nmake
+    - name: Build VMPStudio
+      shell: cmd
+      run: |
+        set PATH=%PATH%;%CD%\Qt\bin
+        qmake VMPStudio.pro -spec %QMAKE_SPEC% ${{ matrix.os == 'Windows' && 'QMAKE_SPEC=win32-clang-msvc' }}
+        nmake || jom
 
-      # ========== [6] 构建 GUI 库 ==========
-      - name: Build x64dbglib
-        shell: cmd
-        working-directory: ${{ env.BUILD_DIR }}
-        run: |
-          qmake "${{ github.workspace }}/gui/x64dbglib.pro" -spec ${{ env.QMAKE_SPEC }} CONFIG+=release
-          nmake clean
-          nmake
+    - name: Collect artifacts
+      run: |
+        mkdir release
+        cp -r {A64Dbg,VMPStudio}/*.exe release/ 2>/dev/null || true
+        cp -r {A64Dbg,VMPStudio}/*.app release/ 2>/dev/null || true
+        cp LICENSE README.X64DBG.md release/
 
-      # ========== [7] 构建主程序 ==========
-      - name: Build A64Dbg
-        shell: cmd
-        working-directory: ${{ env.BUILD_DIR }}
-        run: |
-          qmake "${{ github.workspace }}/A64Dbg.pro" -spec ${{ env.QMAKE_SPEC }} CONFIG+=release
-          nmake clean
-          nmake
-
-      - name: Build VMPStudio
-        shell: cmd
-        working-directory: ${{ env.BUILD_DIR }}
-        run: |
-          qmake "${{ github.workspace }}/VMPStudio.pro" -spec ${{ env.QMAKE_SPEC }} CONFIG+=release
-          nmake clean
-          nmake
-
-      # ========== [8] 收集编译产物 ==========
-      - name: Collect binaries
-        shell: cmd
-        run: |
-          mkdir "${{ github.workspace }}/release"
-          xcopy /y /s "${{ env.BUILD_DIR }}\release\*.exe" "${{ github.workspace }}\release\"
-          xcopy /y /s "${{ env.BUILD_DIR }}\release\*.dll" "${{ github.workspace }}\release\"
-          xcopy /y /s "${{ env.BUILD_DIR }}\release\platforms" "${{ github.workspace }}\release\platforms\"
-
-      # ========== [9] 打包发布文件 ==========
-      - name: Create release package
-        shell: cmd
-        run: |
-          7z a -tzip -r "${{ github.workspace }}/X64Dbg-Windows-Release.zip" "${{ github.workspace }}/release/*"
-
-      # ========== [10] 上传产物 ==========
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: X64Dbg-Windows-Release
-          path: ${{ github.workspace }}/X64Dbg-Windows-Release.zip
-
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
-        with:
-          files: |
-            ${{ github.workspace }}/X64Dbg-Windows-Release.zip
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: Binaries-${{ matrix.os }}-${{ matrix.arch }}
+        path: release/
