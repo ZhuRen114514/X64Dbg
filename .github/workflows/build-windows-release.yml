@@ -1,131 +1,74 @@
-name: Build and Release
+name: Windows x86_64 Build
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
-    inputs:
-      release_tag:
-        description: 'Release tag (format v1.0.0)'
-        required: true
 
 jobs:
-  multi_platform_build:
-    name: Build (${{ matrix.os }}-${{ matrix.arch }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Windows builds
-          - os: windows-latest
-            arch: x86_64
-            qmake_spec: win32-clang-msvc
-            artifact_name: windows-x64
-          
-          - os: windows-latest
-            arch: arm64
-            qmake_spec: win32-clang-msvc
-            artifact_name: windows-arm64
-
-          # macOS builds
-          - os: macos-latest
-            arch: x86_64
-            qmake_spec: macx-clang
-            artifact_name: macos-x64
-          
-          - os: macos-latest
-            arch: arm64
-            qmake_spec: macx-clang-arm64
-            artifact_name: macos-arm64
-
-          # Linux builds
-          - os: ubuntu-latest
-            arch: x86_64
-            qmake_spec: linux-g++
-            artifact_name: linux-x64
-          
-          - os: ubuntu-latest
-            arch: arm64
-            qmake_spec: linux-aarch64-g++
-            artifact_name: linux-arm64
+  build:
+    name: Build and Release
+    runs-on: windows-latest
+    environment: release
+    permissions:
+      contents: write
 
     steps:
-    - name: Checkout code
+    - name: Checkout repository
       uses: actions/checkout@v4
 
     - name: Setup Qt
-      uses: jurplel/install-qt-action@v3
+      uses: jurplel/setup-qt-action@v2
       with:
-        version: '5.15.2'
-        host: ${{ contains(matrix.os, 'windows') && 'windows' || 'linux' }}
-        target: ${{ matrix.arch }}
+        version: 6.7.0
+        host: windows
+        target: desktop
+        arch: win64_msvc2019_64
+        modules: qttools
 
-    - name: Install dependencies
-      if: runner.os == 'Linux'
+    - name: Install build tools
+      shell: powershell
       run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential libgl1-mesa-dev
+        choco install jom -y
+        echo "C:\Qt\Tools\QtCreator\bin" >> $env:GITHUB_PATH
+        echo "C:\Qt\6.7.0\msvc2019_64\bin" >> $env:GITHUB_PATH
 
-    - name: Build Projects
+    - name: Build DebugEngine
       shell: cmd
       run: |
-        qmake YunYooDbgCore.pro -spec ${{ matrix.qmake_spec }}
-        nmake
-        cd gui && qmake x64dbglib.pro -spec ${{ matrix.qmake_spec }} && nmake
-        cd ../A64Dbg && qmake A64Dbg.pro -spec ${{ matrix.qmake_spec }} && nmake
-        cd ../VMPStudio && qmake VMPStudio.pro -spec ${{ matrix.qmake_spec }} && nmake
+        qmake YunYooDbgCore.pro -spec win32-msvc
+        jom release
 
-    - name: Package Artifacts
-      shell: bash
+    - name: Build GUI Library
+      shell: cmd
       run: |
-        mkdir release
-        # Windows packaging
-        if [ "${{ runner.os }}" == "Windows" ]; then
-          cp A64Dbg/release/A64Dbg.exe release/
-          cp VMPStudio/release/VMPStudio.exe release/
-        # macOS packaging
-        elif [ "${{ runner.os }}" == "macOS" ]; then
-          cp -R A64Dbg/A64Dbg.app release/
-          cp -R VMPStudio/VMPStudio.app release/
-        # Linux packaging
-        else
-          cp A64Dbg/A64Dbg release/
-          cp VMPStudio/VMPStudio release/
-        fi
-        cp LICENSE README.X64DBG.md release/
+        cd gui
+        qmake x64dbglib.pro -spec win32-clang-msvc
+        jom release
+        cd ..
 
-    - name: Upload Artifact
-      uses: actions/upload-artifact@v3
+    - name: Build A64Dbg
+      shell: cmd
+      run: |
+        qmake A64Dbg.pro -spec win32-clang-msvc
+        jom release
+
+    - name: Build VMPStudio
+      shell: cmd
+      run: |
+        qmake VMPStudio.pro -spec win32-clang-msvc
+        jom release
+
+    - name: Package artifacts
+      shell: powershell
+      run: |
+        $date = Get-Date -Format "yyyyMMdd"
+        Compress-Archive -Path @("A64Dbg/release/*", "VMPStudio/release/*") -DestinationPath "X64Dbg-$date-win64.zip"
+
+    - name: Upload Release
+      uses: softprops/action-gh-release@v1
       with:
-        name: ${{ matrix.artifact_name }}-binaries
-        path: release/
-
-  create_release:
-    needs: multi_platform_build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download All Artifacts
-        uses: actions/download-artifact@v3
-        with:
-          path: artifacts
-
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref || inputs.release_tag }}
-          release_name: Release ${{ github.ref || inputs.release_tag }}
-          draft: false
-          prerelease: false
-
-      - name: Upload Release Assets
-        uses: softprops/action-gh-release@v1
-        with:
-          files: |
-            artifacts/**/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        token: ${{ secrets.GITHUB_TOKEN }}
+        files: X64Dbg-*-win64.zip
+        draft: false
+        prerelease: false
+        title: "Nightly Build ${{ github.run_number }}"
+        body: "Automatic build for Windows x86_64"
